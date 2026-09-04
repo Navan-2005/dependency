@@ -208,10 +208,430 @@ function extractRequires(ast) {
     return requires;
 }
 
+function extractApiUsages(ast, imports) {
 
-// --------------------------------------------------
-// Export
-// --------------------------------------------------
+    const apiUsages = [];
 
-export { getSourceFiles, extractImports, extractRequires };
+    // ---------------------------------------------------------
+    // importedSymbols
+    //
+    // Example:
+    //
+    // import express from "express";
+    // import jwt from "jsonwebtoken";
+    // import { v4 as uuid } from "uuid";
+    //
+    // becomes:
+    //
+    // express -> express
+    // jwt     -> jsonwebtoken
+    // uuid    -> uuid
+    // ---------------------------------------------------------
+
+    const importedSymbols = {};
+
+    for (const imp of imports) {
+
+        if (imp.type !== "external") {
+            continue;
+        }
+
+        for (const specifier of imp.specifiers) {
+
+            importedSymbols[specifier.local] = {
+                package: imp.package,
+                imported: specifier.imported
+            };
+        }
+    }
+
+
+    // ---------------------------------------------------------
+    // objectSymbols
+    //
+    // This tracks variables created from imported libraries.
+    //
+    // Example:
+    //
+    // const app = express();
+    //
+    // app -> express
+    //
+    // const router = express.Router();
+    //
+    // router -> express
+    // ---------------------------------------------------------
+
+    const objectSymbols = {};
+
+
+    // ---------------------------------------------------------
+    // Add API usage
+    // ---------------------------------------------------------
+
+    function addUsage({
+        packageName,
+        api,
+        type,
+        line,
+        local
+    }) {
+
+        apiUsages.push({
+            package: packageName,
+            api,
+            type,
+            line,
+            local
+        });
+    }
+
+
+    // ---------------------------------------------------------
+    // Visit AST
+    // ---------------------------------------------------------
+
+    function visit(node) {
+
+        if (!node || typeof node !== "object") {
+            return;
+        }
+
+
+        // =====================================================
+        // 1. Detect:
+        //
+        // const app = express();
+        //
+        // const uuidValue = uuid();
+        //
+        // const prisma = PrismaClient();
+        // =====================================================
+
+        if (
+            node.type === "VariableDeclarator" &&
+            node.id?.type === "Identifier" &&
+            node.init
+        ) {
+
+            const variableName = node.id.name;
+
+            // -----------------------------------------------
+            // const app = express()
+            // -----------------------------------------------
+
+            if (
+                node.init.type === "CallExpression" &&
+                node.init.callee?.type === "Identifier"
+            ) {
+
+                const functionName = node.init.callee.name;
+
+                const imported = importedSymbols[functionName];
+
+                if (imported) {
+
+                    // Remember:
+                    //
+                    // app -> express
+                    //
+
+                    objectSymbols[variableName] = {
+                        package: imported.package,
+                        source: functionName,
+                        api:
+                            imported.imported === "default"
+                                ? functionName
+                                : imported.imported
+                    };
+
+                    addUsage({
+                        packageName: imported.package,
+                        api:
+                            imported.imported === "default"
+                                ? functionName
+                                : imported.imported,
+                        type: "function",
+                        line: node.init.loc?.start.line,
+                        local: functionName
+                    });
+                }
+            }
+
+
+            // -----------------------------------------------
+            // const router = express.Router()
+            // -----------------------------------------------
+
+            if (
+                node.init.type === "CallExpression" &&
+                node.init.callee?.type === "MemberExpression"
+            ) {
+
+                const object = node.init.callee.object;
+                const property = node.init.callee.property;
+
+                if (
+                    object?.type === "Identifier" &&
+                    property?.type === "Identifier"
+                ) {
+
+                    const objectName = object.name;
+                    const methodName = property.name;
+
+                    const imported = importedSymbols[objectName];
+
+                    if (imported) {
+
+                        // Remember:
+                        //
+                        // router -> express
+                        //
+
+                        objectSymbols[variableName] = {
+                            package: imported.package,
+                            source: objectName,
+                            api: methodName
+                        };
+
+                        addUsage({
+                            packageName: imported.package,
+                            api: methodName,
+                            type: "method",
+                            line: node.init.loc?.start.line,
+                            local: objectName
+                        });
+                    }
+                }
+            }
+
+
+            // -----------------------------------------------
+            // const prisma = new PrismaClient()
+            // -----------------------------------------------
+
+            if (
+                node.init.type === "NewExpression" &&
+                node.init.callee?.type === "Identifier"
+            ) {
+
+                const className = node.init.callee.name;
+
+                const imported = importedSymbols[className];
+
+                if (imported) {
+
+                    objectSymbols[variableName] = {
+                        package: imported.package,
+                        source: className,
+                        api:
+                            imported.imported === "default"
+                                ? className
+                                : imported.imported
+                    };
+
+                    addUsage({
+                        packageName: imported.package,
+                        api:
+                            imported.imported === "default"
+                                ? className
+                                : imported.imported,
+                        type: "constructor",
+                        line: node.init.loc?.start.line,
+                        local: className
+                    });
+                }
+            }
+        }
+
+
+        // =====================================================
+        // 2. Direct function calls
+        //
+        // express()
+        // uuid()
+        // useState()
+        // =====================================================
+
+        if (
+            node.type === "CallExpression" &&
+            node.callee?.type === "Identifier"
+        ) {
+
+            const localName = node.callee.name;
+
+            const imported = importedSymbols[localName];
+
+            if (imported) {
+
+                addUsage({
+                    packageName: imported.package,
+                    api:
+                        imported.imported === "default"
+                            ? localName
+                            : imported.imported,
+                    type: "function",
+                    line: node.loc?.start.line,
+                    local: localName
+                });
+            }
+        }
+
+
+        // =====================================================
+        // 3. Method calls on imported objects
+        //
+        // jwt.sign()
+        // jwt.verify()
+        //
+        // =====================================================
+
+        if (
+            node.type === "CallExpression" &&
+            node.callee?.type === "MemberExpression"
+        ) {
+
+            const object = node.callee.object;
+            const property = node.callee.property;
+
+            if (
+                object?.type === "Identifier" &&
+                property?.type === "Identifier"
+            ) {
+
+                const objectName = object.name;
+                const methodName = property.name;
+
+                // -------------------------------------------
+                // Direct imported object
+                //
+                // jwt.sign()
+                // -------------------------------------------
+
+                const imported = importedSymbols[objectName];
+
+                if (imported) {
+
+                    addUsage({
+                        packageName: imported.package,
+                        api: methodName,
+                        type: "method",
+                        line: node.loc?.start.line,
+                        local: objectName
+                    });
+                }
+
+
+                // -------------------------------------------
+                // Object created from imported library
+                //
+                // app.get()
+                // router.post()
+                // prisma.connect()
+                // -------------------------------------------
+
+                const objectInfo = objectSymbols[objectName];
+
+                if (objectInfo) {
+
+                    addUsage({
+                        packageName: objectInfo.package,
+                        api: methodName,
+                        type: "method",
+                        line: node.loc?.start.line,
+                        local: objectName
+                    });
+                }
+            }
+        }
+
+
+        // =====================================================
+        // 4. new Something()
+        //
+        // new PrismaClient()
+        // =====================================================
+
+        if (
+            node.type === "NewExpression" &&
+            node.callee?.type === "Identifier"
+        ) {
+
+            const localName = node.callee.name;
+
+            const imported = importedSymbols[localName];
+
+            if (imported) {
+
+                addUsage({
+                    packageName: imported.package,
+                    api:
+                        imported.imported === "default"
+                            ? localName
+                            : imported.imported,
+                    type: "constructor",
+                    line: node.loc?.start.line,
+                    local: localName
+                });
+            }
+        }
+
+
+        // =====================================================
+        // Continue traversing AST
+        //
+        // Only visit actual AST nodes.
+        // =====================================================
+
+        for (const key of Object.keys(node)) {
+
+            if (
+                key === "loc" ||
+                key === "start" ||
+                key === "end" ||
+                key === "range" ||
+                key === "extra"
+            ) {
+                continue;
+            }
+
+            const value = node[key];
+
+            if (Array.isArray(value)) {
+
+                for (const child of value) {
+
+                    if (
+                        child &&
+                        typeof child === "object" &&
+                        typeof child.type === "string"
+                    ) {
+                        visit(child);
+                    }
+                }
+
+            } else if (
+                value &&
+                typeof value === "object" &&
+                typeof value.type === "string"
+            ) {
+
+                visit(value);
+            }
+        }
+    }
+
+
+    visit(ast);
+
+    return apiUsages;
+}
+
+
+export {
+    getSourceFiles,
+    extractImports,
+    extractRequires,
+    extractApiUsages
+};
 

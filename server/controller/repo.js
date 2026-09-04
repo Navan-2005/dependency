@@ -4,7 +4,7 @@ import {getAllFiles} from '../files/files.js'
 import fs from "fs/promises";
 import path from"path";
 import {parse} from "@babel/parser";
-import {getSourceFiles, extractImports, extractRequires} from '../service/analyze.js'
+import {getSourceFiles, extractImports, extractRequires,extractApiUsages} from '../service/analyze.js'
 const clone=async(req,res)=>{
     try{
         const {repoUrl}=req.body;
@@ -77,13 +77,17 @@ async function analyzeJavaScript(repoPath) {
         const requires =
             extractRequires(ast);
 
+         const apiUsages = extractApiUsages(ast, imports);
+
+
         results.push({
             file: path.relative(
                 repoPath,
                 file
             ),
             imports,
-            requires
+            requires,
+            apiUsages
         });
     }
 
