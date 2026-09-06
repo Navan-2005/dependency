@@ -13,12 +13,14 @@
   "dependencies": {
     "@babel/parser": "^8.0.4",
     "@babel/traverse": "^8.0.4",
+    "@google/genai": "^2.21.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "nodemon": "^3.1.14",
     "router": "^2.2.0",
     "simple-git": "^3.36.0",
-    "simplegit": "^1.0.2"
+    "simplegit": "^1.0.2",
+    "tar": "^7.5.22"
   }
 }

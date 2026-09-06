@@ -3,6 +3,7 @@ import fs from "fs/promises";
 import path from "path";
 import {parse} from "@babel/parser";
 import * as traverseModule from "@babel/traverse";
+import { resolveImport } from "./moduleResolver.js";
 
 const traverse = traverseModule.default;
 
@@ -212,379 +213,529 @@ function extractApiUsages(ast, imports) {
 
     const apiUsages = [];
 
-    // ---------------------------------------------------------
-    // importedSymbols
+    // Maps imported local variables to their package/API.
     //
     // Example:
     //
-    // import express from "express";
-    // import jwt from "jsonwebtoken";
-    // import { v4 as uuid } from "uuid";
+    // import express from "express"
     //
-    // becomes:
+    // express -> {
+    //     package: "express",
+    //     api: null
+    // }
     //
-    // express -> express
-    // jwt     -> jsonwebtoken
-    // uuid    -> uuid
-    // ---------------------------------------------------------
-
-    const importedSymbols = {};
-
-    for (const imp of imports) {
-
-        if (imp.type !== "external") {
-            continue;
-        }
-
-        for (const specifier of imp.specifiers) {
-
-            importedSymbols[specifier.local] = {
-                package: imp.package,
-                imported: specifier.imported
-            };
-        }
-    }
-
-
-    // ---------------------------------------------------------
-    // objectSymbols
+    // import { v4 as uuid } from "uuid"
     //
-    // This tracks variables created from imported libraries.
+    // uuid -> {
+    //     package: "uuid",
+    //     api: "v4"
+    // }
+    const importedSymbols = new Map();
+
+
+    // Maps objects created from imported APIs.
     //
     // Example:
     //
     // const app = express();
     //
-    // app -> express
+    // app -> {
+    //     package: "express",
+    //     api: null
+    // }
     //
     // const router = express.Router();
     //
-    // router -> express
-    // ---------------------------------------------------------
+    // router -> {
+    //     package: "express",
+    //     api: "Router"
+    // }
+    //
+    // const prisma = new PrismaClient();
+    //
+    // prisma -> {
+    //     package: "@prisma/client",
+    //     api: "PrismaClient"
+    // }
+    const createdObjects = new Map();
 
-    const objectSymbols = {};
+
+    // Prevent duplicate detection.
+    //
+    // const app = express();
+    //
+    // The express() CallExpression is first handled while
+    // processing the VariableDeclarator.
+    //
+    // Later the AST traversal reaches the same CallExpression.
+    //
+    // This Set prevents us from recording it twice.
+    const handledCalls = new Set();
 
 
-    // ---------------------------------------------------------
-    // Add API usage
-    // ---------------------------------------------------------
+    // =========================================================
+    // 1. BUILD IMPORTED SYMBOL MAP
+    // =========================================================
 
-    function addUsage({
-        packageName,
-        api,
-        type,
-        line,
-        local
-    }) {
+    for (const imp of imports) {
 
-        apiUsages.push({
-            package: packageName,
-            api,
-            type,
-            line,
-            local
-        });
+        // Ignore local imports and built-ins.
+        if (imp.type !== "external") {
+            continue;
+        }
+
+
+        for (const specifier of imp.specifiers || []) {
+
+            importedSymbols.set(
+                specifier.local,
+                {
+                    package: imp.package,
+
+                    // default import:
+                    //
+                    // import express from "express"
+                    //
+                    // imported = "default"
+                    //
+                    // We don't have a specific API name yet.
+                    //
+                    // named import:
+                    //
+                    // import { v4 as uuid } from "uuid"
+                    //
+                    // imported = "v4"
+                    api:
+                        specifier.imported === "default"
+                            ? null
+                            : specifier.imported
+                }
+            );
+        }
     }
 
 
-    // ---------------------------------------------------------
-    // Visit AST
-    // ---------------------------------------------------------
+    // =========================================================
+    // 2. GET LINE NUMBER
+    // =========================================================
+
+    function getLine(node) {
+
+        return node?.loc?.start?.line || null;
+    }
+
+
+    // =========================================================
+    // 3. RESOLVE A VARIABLE
+    // =========================================================
+    //
+    // First check created objects.
+    //
+    // Example:
+    //
+    // app -> express
+    //
+    // Then check imported symbols.
+    //
+    // Example:
+    //
+    // express -> express
+    //
+    // =========================================================
+
+    function resolve(name) {
+
+        if (createdObjects.has(name)) {
+
+            return createdObjects.get(name);
+        }
+
+
+        if (importedSymbols.has(name)) {
+
+            return importedSymbols.get(name);
+        }
+
+
+        return null;
+    }
+
+
+    // =========================================================
+    // 4. ADD API USAGE
+    // =========================================================
+
+function addUsage(
+    packageName,
+    api,
+    type,
+    node,
+    local,
+    receiver = null
+) {
+
+    // Don't add incomplete information.
+    if (!packageName || !api) {
+        return;
+    }
+
+    apiUsages.push({
+        package: packageName,
+        api,
+        type,
+        line: getLine(node),
+        local: local || null,
+        receiver
+    });
+}
+
+
+    // =========================================================
+    // 5. MAIN AST TRAVERSAL
+    // =========================================================
 
     function visit(node) {
 
-        if (!node || typeof node !== "object") {
+        // Make sure this is an actual AST node.
+        if (
+            !node ||
+            typeof node !== "object" ||
+            typeof node.type !== "string"
+        ) {
             return;
         }
 
 
         // =====================================================
-        // 1. Detect:
+        // VARIABLE DECLARATIONS
+        // =====================================================
         //
         // const app = express();
         //
-        // const uuidValue = uuid();
+        // const router = express.Router();
         //
-        // const prisma = PrismaClient();
+        // const prisma = new PrismaClient();
+        //
         // =====================================================
 
         if (
             node.type === "VariableDeclarator" &&
-            node.id?.type === "Identifier" &&
-            node.init
+            node.id?.type === "Identifier"
         ) {
 
             const variableName = node.id.name;
+            const initializer = node.init;
 
-            // -----------------------------------------------
-            // const app = express()
-            // -----------------------------------------------
+
+            // =================================================
+            // CASE 1
+            //
+            // const app = express();
+            //
+            // =================================================
 
             if (
-                node.init.type === "CallExpression" &&
-                node.init.callee?.type === "Identifier"
+                initializer?.type === "CallExpression" &&
+                initializer.callee?.type === "Identifier"
             ) {
 
-                const functionName = node.init.callee.name;
+                const functionName =
+                    initializer.callee.name;
 
-                const imported = importedSymbols[functionName];
+
+                const imported =
+                    resolve(functionName);
+
+
+                if (imported) {
+
+                    // Remember that:
+                    //
+                    // app -> express
+                    //
+                    createdObjects.set(
+                        variableName,
+                        {
+                            package: imported.package,
+                            api: imported.api
+                        }
+                    );
+
+
+                    // Record:
+                    //
+                    // express()
+                    //
+                    addUsage(
+                        imported.package,
+
+                        imported.api ||
+                            functionName,
+
+                        "function",
+
+                        initializer,
+
+                        variableName
+                    );
+
+
+                    // Prevent duplicate detection later.
+                    handledCalls.add(initializer);
+                }
+            }
+
+
+            // =================================================
+            // CASE 2
+            //
+            // const router = express.Router();
+            //
+            // =================================================
+
+            else if (
+                initializer?.type === "CallExpression" &&
+                initializer.callee?.type === "MemberExpression" &&
+                !initializer.callee.computed &&
+                initializer.callee.object?.type === "Identifier" &&
+                initializer.callee.property?.type === "Identifier"
+            ) {
+
+                const objectName =
+                    initializer.callee.object.name;
+
+
+                const methodName =
+                    initializer.callee.property.name;
+
+
+                const imported =
+                    resolve(objectName);
+
 
                 if (imported) {
 
                     // Remember:
                     //
-                    // app -> express
+                    // router -> express.Router
                     //
-
-                    objectSymbols[variableName] = {
-                        package: imported.package,
-                        source: functionName,
-                        api:
-                            imported.imported === "default"
-                                ? functionName
-                                : imported.imported
-                    };
-
-                    addUsage({
-                        packageName: imported.package,
-                        api:
-                            imported.imported === "default"
-                                ? functionName
-                                : imported.imported,
-                        type: "function",
-                        line: node.init.loc?.start.line,
-                        local: functionName
-                    });
-                }
-            }
-
-
-            // -----------------------------------------------
-            // const router = express.Router()
-            // -----------------------------------------------
-
-            if (
-                node.init.type === "CallExpression" &&
-                node.init.callee?.type === "MemberExpression"
-            ) {
-
-                const object = node.init.callee.object;
-                const property = node.init.callee.property;
-
-                if (
-                    object?.type === "Identifier" &&
-                    property?.type === "Identifier"
-                ) {
-
-                    const objectName = object.name;
-                    const methodName = property.name;
-
-                    const imported = importedSymbols[objectName];
-
-                    if (imported) {
-
-                        // Remember:
-                        //
-                        // router -> express
-                        //
-
-                        objectSymbols[variableName] = {
+                    createdObjects.set(
+                        variableName,
+                        {
                             package: imported.package,
-                            source: objectName,
                             api: methodName
-                        };
+                        }
+                    );
 
-                        addUsage({
-                            packageName: imported.package,
-                            api: methodName,
-                            type: "method",
-                            line: node.init.loc?.start.line,
-                            local: objectName
-                        });
-                    }
+
+                    // Record:
+                    //
+                    // express.Router()
+                    //
+                    addUsage(
+                        imported.package,
+                        methodName,
+                        "method",
+                        initializer,
+                        variableName
+                    );
+
+
+                    // Prevent duplicate detection.
+                    handledCalls.add(initializer);
                 }
             }
 
 
-            // -----------------------------------------------
-            // const prisma = new PrismaClient()
-            // -----------------------------------------------
+            // =================================================
+            // CASE 3
+            //
+            // const prisma = new PrismaClient();
+            //
+            // =================================================
 
-            if (
-                node.init.type === "NewExpression" &&
-                node.init.callee?.type === "Identifier"
+            else if (
+                initializer?.type === "NewExpression" &&
+                initializer.callee?.type === "Identifier"
             ) {
 
-                const className = node.init.callee.name;
+                const constructorName =
+                    initializer.callee.name;
 
-                const imported = importedSymbols[className];
+
+                const imported =
+                    resolve(constructorName);
+
 
                 if (imported) {
 
-                    objectSymbols[variableName] = {
-                        package: imported.package,
-                        source: className,
-                        api:
-                            imported.imported === "default"
-                                ? className
-                                : imported.imported
-                    };
+                    // Remember:
+                    //
+                    // prisma -> PrismaClient
+                    //
+                    createdObjects.set(
+                        variableName,
+                        {
+                            package: imported.package,
+                            api:
+                                imported.api ||
+                                constructorName
+                        }
+                    );
 
-                    addUsage({
-                        packageName: imported.package,
-                        api:
-                            imported.imported === "default"
-                                ? className
-                                : imported.imported,
-                        type: "constructor",
-                        line: node.init.loc?.start.line,
-                        local: className
-                    });
+
+                    // Record constructor usage.
+                    addUsage(
+                        imported.package,
+
+                        imported.api ||
+                            constructorName,
+
+                        "constructor",
+
+                        initializer,
+
+                        variableName
+                    );
                 }
             }
         }
 
 
         // =====================================================
-        // 2. Direct function calls
+        // CALL EXPRESSIONS
+        // =====================================================
         //
-        // express()
-        // uuid()
-        // useState()
-        // =====================================================
-
-        if (
-            node.type === "CallExpression" &&
-            node.callee?.type === "Identifier"
-        ) {
-
-            const localName = node.callee.name;
-
-            const imported = importedSymbols[localName];
-
-            if (imported) {
-
-                addUsage({
-                    packageName: imported.package,
-                    api:
-                        imported.imported === "default"
-                            ? localName
-                            : imported.imported,
-                    type: "function",
-                    line: node.loc?.start.line,
-                    local: localName
-                });
-            }
-        }
-
-
-        // =====================================================
-        // 3. Method calls on imported objects
+        // Handles:
+        //
+        // app.get()
+        // app.post()
+        // app.use()
+        //
+        // router.get()
+        // router.post()
         //
         // jwt.sign()
         // jwt.verify()
         //
+        // uuid()
+        // useState()
+        //
         // =====================================================
 
-        if (
-            node.type === "CallExpression" &&
-            node.callee?.type === "MemberExpression"
-        ) {
+        if (node.type === "CallExpression") {
 
-            const object = node.callee.object;
-            const property = node.callee.property;
+            // If this call was already handled while processing
+            // VariableDeclarator, don't process it again.
+            if (!handledCalls.has(node)) {
 
-            if (
-                object?.type === "Identifier" &&
-                property?.type === "Identifier"
-            ) {
-
-                const objectName = object.name;
-                const methodName = property.name;
-
-                // -------------------------------------------
-                // Direct imported object
-                //
-                // jwt.sign()
-                // -------------------------------------------
-
-                const imported = importedSymbols[objectName];
-
-                if (imported) {
-
-                    addUsage({
-                        packageName: imported.package,
-                        api: methodName,
-                        type: "method",
-                        line: node.loc?.start.line,
-                        local: objectName
-                    });
-                }
+                const callee = node.callee;
 
 
-                // -------------------------------------------
-                // Object created from imported library
+                // =================================================
+                // MEMBER CALL
                 //
                 // app.get()
-                // router.post()
-                // prisma.connect()
-                // -------------------------------------------
+                // app.post()
+                //
+                // router.get()
+                //
+                // jwt.sign()
+                //
+                // =================================================
 
-                const objectInfo = objectSymbols[objectName];
+                if (
+                    callee.type === "MemberExpression" &&
+                    !callee.computed &&
+                    callee.object?.type === "Identifier" &&
+                    callee.property?.type === "Identifier"
+                ) {
 
-                if (objectInfo) {
+                    const objectName =
+                        callee.object.name;
 
-                    addUsage({
-                        packageName: objectInfo.package,
-                        api: methodName,
-                        type: "method",
-                        line: node.loc?.start.line,
-                        local: objectName
-                    });
+
+                    const methodName =
+                        callee.property.name;
+
+
+                    const resolved =
+                        resolve(objectName);
+
+
+                    if (resolved) {
+
+                        addUsage(
+                            resolved.package,
+                            methodName,
+                            "method",
+                            node,
+                            objectName
+                        );
+                    }
+                }
+
+
+                // =================================================
+                // DIRECT FUNCTION CALL
+                //
+                // uuid()
+                // useState()
+                // express()
+                //
+                // =================================================
+
+                else if (
+                    callee.type === "Identifier"
+                ) {
+
+                    const functionName =
+                        callee.name;
+
+
+                    const resolved =
+                        resolve(functionName);
+
+
+                    if (resolved) {
+
+                        addUsage(
+                            resolved.package,
+
+                            resolved.api ||
+                                functionName,
+
+                            "function",
+
+                            node,
+
+                            functionName
+                        );
+                    }
                 }
             }
         }
 
 
         // =====================================================
-        // 4. new Something()
-        //
-        // new PrismaClient()
+        // SAFE AST TRAVERSAL
         // =====================================================
-
-        if (
-            node.type === "NewExpression" &&
-            node.callee?.type === "Identifier"
-        ) {
-
-            const localName = node.callee.name;
-
-            const imported = importedSymbols[localName];
-
-            if (imported) {
-
-                addUsage({
-                    packageName: imported.package,
-                    api:
-                        imported.imported === "default"
-                            ? localName
-                            : imported.imported,
-                    type: "constructor",
-                    line: node.loc?.start.line,
-                    local: localName
-                });
-            }
-        }
-
-
-        // =====================================================
-        // Continue traversing AST
         //
-        // Only visit actual AST nodes.
+        // IMPORTANT:
+        //
+        // Do NOT blindly recursively traverse every object
+        // property.
+        //
+        // Babel AST nodes contain metadata such as loc,
+        // start, end, etc.
+        //
+        // Only visit objects that are actual AST nodes.
+        //
         // =====================================================
 
         for (const key of Object.keys(node)) {
 
+            // Skip metadata / non-AST properties.
             if (
                 key === "loc" ||
                 key === "start" ||
@@ -595,38 +746,59 @@ function extractApiUsages(ast, imports) {
                 continue;
             }
 
-            const value = node[key];
 
-            if (Array.isArray(value)) {
+            const child = node[key];
 
-                for (const child of value) {
+
+            // =================================================
+            // Array of AST nodes
+            // =================================================
+
+            if (Array.isArray(child)) {
+
+                for (const item of child) {
 
                     if (
-                        child &&
-                        typeof child === "object" &&
-                        typeof child.type === "string"
+                        item &&
+                        typeof item === "object" &&
+                        typeof item.type === "string"
                     ) {
-                        visit(child);
+
+                        visit(item);
                     }
                 }
+            }
 
-            } else if (
-                value &&
-                typeof value === "object" &&
-                typeof value.type === "string"
+
+            // =================================================
+            // Single AST node
+            // =================================================
+
+            else if (
+                child &&
+                typeof child === "object" &&
+                typeof child.type === "string"
             ) {
 
-                visit(value);
+                visit(child);
             }
         }
     }
 
 
+    // =========================================================
+    // START TRAVERSAL
+    // =========================================================
+
     visit(ast);
+
+
+    // =========================================================
+    // RETURN RESULTS
+    // =========================================================
 
     return apiUsages;
 }
-
 
 export {
     getSourceFiles,
