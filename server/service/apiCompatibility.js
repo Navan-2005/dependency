@@ -1,9 +1,21 @@
+import { getApiIdentity } from "./apiDiff.js";
+
 function normalizeParameters(parameters = []) {
-  return parameters.map((param) => ({
-    name: param.name || null,
-    type: param.type || null,
-    optional: Boolean(param.optional)
-  }));
+  return parameters.map((param) => {
+    if (typeof param === "string") {
+      return {
+        name: param,
+        type: null,
+        optional: false
+      };
+    }
+
+    return {
+      name: param.name || null,
+      type: param.type || null,
+      optional: Boolean(param.optional)
+    };
+  });
 }
 
 function getRequiredParameterCount(parameters = []) {
@@ -178,50 +190,42 @@ function buildCompatibilityResults({
       api => getApiIdentity(api) === apiName
     );
 
-    const usages = impact.usages || [];
-
-    for (const usage of usages) {
-
-      const repositoryUsage =
-        usage.callSite || usage;
-
-      const compatibility =
-        analyzeApiCompatibility({
-          oldApi,
-          newApi,
-          repositoryUsage
-        });
-
-      results.push({
-        package: impact.package || null,
-        api: apiName,
-
+    const repositoryUsage =
+      impact.callSite || {
+        argumentCount:
+          impact.argumentCount,
+        arguments:
+          impact.arguments,
         file:
-          usage.file ||
-          repositoryUsage.file ||
-          null,
-
+          impact.file,
         line:
-          usage.line ||
-          repositoryUsage.line ||
-          null,
+          impact.line
+      };
 
-        compatibility
+    const compatibility =
+      analyzeApiCompatibility({
+        oldApi,
+        newApi,
+        repositoryUsage
       });
-    }
+
+    results.push({
+      package: impact.package || null,
+      api: apiName,
+
+      file:
+        impact.file ||
+        null,
+
+      line:
+        impact.line ||
+        null,
+
+      compatibility
+    });
   }
 
   return results;
-}
-
-function getApiIdentity(api) {
-  if (!api) return "";
-
-  if (api.parent && api.name) {
-    return `${api.parent}.${api.name}`;
-  }
-
-  return api.name || "";
 }
 
 export {

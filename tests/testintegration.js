@@ -1,5 +1,5 @@
-import { generateImpactReport } from "./service/apiImpactMatcher.js";
-import { buildCompatibilityResults } from "./service/apiCompatibility.js";
+import { generateImpactReport } from "../server/service/apiImpactMatcher.js";
+import { buildCompatibilityResults } from "../server/service/apiCompatibility.js";
 
 const oldApis = [
   {

@@ -2,19 +2,19 @@ import "dotenv/config";
 
 import {
     chunkDocuments
-} from "./service/rag/documentChunker.js";
+} from "../server/service/rag/documentChunker.js";
 
 import {
     generateEmbeddings
-} from "./service/rag/embeddings.js";
+} from "../server/service/rag/embeddings.js";
 
 import {
     VectorStore
-} from "./service/rag/vectorStore.js";
+} from "../server/service/rag/vectorStore.js";
 
 import {
     Retriever
-} from "./service/rag/retriever.js";
+} from "../server/service/rag/retriever.js";
 
 
 const documents = [

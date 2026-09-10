@@ -1,6 +1,6 @@
 import {
     analyzeJavaScript
-} from "./controller/repo.js";
+} from "../server/controller/repo.js";
 
 
 const result =

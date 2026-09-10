@@ -1,4 +1,4 @@
-import { analyzeApiCompatibility } from "./service/apiCompatibility.js";
+import { analyzeApiCompatibility } from "../server/service/apiCompatibility.js";
 
 const oldApi = {
   name: "verify",

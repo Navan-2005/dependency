@@ -2,16 +2,16 @@ import "dotenv/config";
 
 import {
     analyzePackageVersion
-} from "./service/packageApiAnalyzer.js";
+} from "../server/service/packageApiAnalyzer.js";
 
 import {
     buildPackageKnowledge
-} from "./service/rag/packageKnowledge.js";
+} from "../server/service/rag/packageKnowledge.js";
 
 import {
     evaluateRag,
     summarizeEvaluation
-} from "./service/rag/ragEvaluator.js";
+} from "../server/service/rag/ragEvaluator.js";
 
 
 const PACKAGE_NAME = "express";

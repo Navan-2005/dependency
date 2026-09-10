@@ -46,10 +46,25 @@ async function buildPackageKnowledge(snapshot) {
         );
 
 
-    const embeddedChunks =
-        await generateEmbeddings(
-            chunks
+    let embeddedChunks;
+
+    try {
+
+        embeddedChunks =
+            await generateEmbeddings(
+                chunks
+            );
+
+    }
+    catch (error) {
+
+        console.error(
+            "Failed to embed documentation chunks:",
+            error?.message || error
         );
+
+        embeddedChunks = [];
+    }
 
 
     const vectorStore =
@@ -61,9 +76,11 @@ async function buildPackageKnowledge(snapshot) {
 
 
     const retriever =
-        new Retriever(
-            vectorStore
-        );
+        embeddedChunks.length > 0
+            ? new Retriever(
+                vectorStore
+            )
+            : null;
 
 
     return {

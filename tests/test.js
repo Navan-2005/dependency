@@ -1,4 +1,4 @@
-import { analyzePackageVersion } from "./service/packageApiAnalyzer.js";
+import { analyzePackageVersion } from "../server/service/packageApiAnalyzer.js";
 
 const result =
     analyzePackageVersion(

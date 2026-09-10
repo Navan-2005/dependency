@@ -1,4 +1,4 @@
-import { analyze, analyzeJavaScript } from "./controller/repo.js";
+import { analyze, analyzeJavaScript } from "../server/controller/repo.js";
 
 
 
@@ -7,7 +7,7 @@ const repoPath =
 
     import {
     findPackageUsages
-} from "./service/apiImpactMatcher.js";
+} from "../server/service/apiImpactMatcher.js";
 
 
 const result =

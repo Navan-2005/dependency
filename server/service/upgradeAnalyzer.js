@@ -183,12 +183,9 @@ async function analyzeUpgrade(
 
     const impactReport =
         generateImpactReport(
-            packageName,
-            projectName,
-            installedVersion,
-            targetVersion,
             repositoryAnalysis,
-            apiDiff
+            apiDiff,
+            packageName
         );
 
     console.log(

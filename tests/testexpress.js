@@ -1,5 +1,5 @@
-import { analyzePackageVersion } from "./service/packageApiAnalyzer.js";
-import { diffApiSnapshots } from "./service/apiDiff.js";
+import { analyzePackageVersion } from "../server/service/packageApiAnalyzer.js";
+import { diffApiSnapshots } from "../server/service/apiDiff.js";
 
 const packageName = "express";
 

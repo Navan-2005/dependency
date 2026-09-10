@@ -1161,6 +1161,766 @@ function parseSourceFile(filePath) {
 
 
 /**
+ * Extract exports from a CommonJS source file.
+ *
+ * Handles the CommonJS export patterns used by
+ * packages such as Express:
+ *
+ *   module.exports = createApplication
+ *   exports = module.exports = createApplication
+ *   exports.application = proto
+ *   module.exports.Router = Router
+ *   module.exports = { foo, bar }
+ *   var app = exports = module.exports = {}
+ *   app.get = function (...) {}
+ *
+ * Aliases for the module export object (exports,
+ * module.exports, and local variables assigned to
+ * them) are tracked so that method assignments such
+ * as `app.get = function` or `res.send = function`
+ * are exposed as named APIs.
+ */
+// --------------------------------------------------
+// Extract CommonJS exports
+// --------------------------------------------------
+
+function extractCommonJsExports(
+    ast,
+    filePath
+) {
+
+    const exports = [];
+
+    const moduleAliases =
+        new Set();
+
+    const declaredFunctions =
+        new Set();
+
+
+    function addApi(api) {
+
+        const duplicate =
+            exports.some(
+                (existing) =>
+                    existing.name === api.name &&
+                    existing.type === api.type &&
+                    existing.kind === api.kind
+            );
+
+
+        if (!duplicate) {
+            exports.push(api);
+        }
+    }
+
+
+    // ------------------------------------------------
+    // Reference helpers
+    // ------------------------------------------------
+
+    function isPrimaryExportTarget(node) {
+
+        if (!node) {
+            return false;
+        }
+
+
+        // exports
+        if (
+            node.type === "Identifier" &&
+            node.name === "exports"
+        ) {
+            return true;
+        }
+
+
+        // module.exports
+        if (
+            node.type === "MemberExpression" &&
+            !node.computed &&
+            node.object?.type === "Identifier" &&
+            node.object.name === "module" &&
+            node.property?.name === "exports"
+        ) {
+            return true;
+        }
+
+
+        return false;
+    }
+
+
+    function isModuleExportsRef(node) {
+
+        if (!node) {
+            return false;
+        }
+
+
+        if (
+            isPrimaryExportTarget(
+                node
+            )
+        ) {
+            return true;
+        }
+
+
+        // Local alias such as `app` or `res`
+        if (
+            node.type === "Identifier" &&
+            moduleAliases.has(
+                node.name
+            )
+        ) {
+            return true;
+        }
+
+
+        return false;
+    }
+
+
+    function getMemberName(node) {
+
+        if (
+            node?.type !==
+            "MemberExpression"
+        ) {
+            return null;
+        }
+
+
+        return (
+            node.property?.name ||
+            node.property?.value ||
+            null
+        );
+    }
+
+
+    function getOwnerName(node) {
+
+        if (!node) {
+            return null;
+        }
+
+
+        if (
+            node.type ===
+            "Identifier"
+        ) {
+            return node.name;
+        }
+
+
+        if (
+            node.type ===
+            "MemberExpression"
+        ) {
+            return "module.exports";
+        }
+
+
+        return null;
+    }
+
+
+    function unwrapAssignmentRhs(node) {
+
+        while (
+            node &&
+            node.type ===
+            "AssignmentExpression"
+        ) {
+            node = node.right;
+        }
+
+
+        return node;
+    }
+
+
+    function chainAssignsExport(node) {
+
+        let current = node;
+
+
+        while (
+            current &&
+            current.type ===
+            "AssignmentExpression"
+        ) {
+
+            if (
+                isPrimaryExportTarget(
+                    current.left
+                )
+            ) {
+                return true;
+            }
+
+
+            current =
+                current.right;
+        }
+
+
+        return false;
+    }
+
+
+    // ------------------------------------------------
+    // Type inference
+    // ------------------------------------------------
+
+    function getRhsType(rhs) {
+
+        if (!rhs) {
+            return "variable";
+        }
+
+
+        switch (rhs.type) {
+
+            case "FunctionExpression":
+            case "ArrowFunctionExpression":
+                return "function";
+
+            case "ClassExpression":
+                return "class";
+
+            case "ObjectExpression":
+                return "object";
+
+            case "Identifier":
+                return (
+                    declaredFunctions.has(
+                        rhs.name
+                    )
+                        ? "function"
+                        : "variable"
+                );
+
+            default:
+                return "variable";
+        }
+    }
+
+
+    function getExportName(rhs) {
+
+        if (!rhs) {
+            return null;
+        }
+
+
+        if (
+            rhs.type ===
+            "Identifier"
+        ) {
+            return rhs.name;
+        }
+
+
+        if (
+            rhs.type ===
+            "FunctionExpression"
+        ) {
+            return rhs.id?.name ||
+                null;
+        }
+
+
+        if (
+            rhs.type ===
+            "ClassExpression"
+        ) {
+            return rhs.id?.name ||
+                null;
+        }
+
+
+        return null;
+    }
+
+
+    function collectSignature(api, rhs) {
+
+        if (
+            rhs &&
+            (
+                rhs.type ===
+                "FunctionExpression" ||
+                rhs.type ===
+                "ArrowFunctionExpression"
+            )
+        ) {
+
+            api.parameters =
+                getFunctionParameters(
+                    rhs
+                );
+
+            api.returnType =
+                getReturnType(
+                    rhs
+                );
+        }
+    }
+
+
+    // ------------------------------------------------
+    // Export emitters
+    // ------------------------------------------------
+
+    function emitPrimaryExport(
+        rhs,
+        line
+    ) {
+
+        const type =
+            getRhsType(
+                rhs
+            );
+
+
+        // module.exports = { foo, bar, ... }
+        if (
+            type ===
+            "object"
+        ) {
+
+            emitObjectLiteral(
+                rhs,
+                line
+            );
+
+            return;
+        }
+
+
+        const name =
+            getExportName(
+                rhs
+            ) ||
+            "module.exports";
+
+
+        const api = {
+
+            name,
+
+            type,
+
+            kind:
+                type,
+
+            file:
+                filePath,
+
+            line
+        };
+
+
+        collectSignature(
+            api,
+            rhs
+        );
+
+
+        addApi(api);
+
+
+        // Track aliases:
+        // module.exports = res; ...; res.send = function
+        if (
+            rhs &&
+            rhs.type ===
+            "Identifier"
+        ) {
+            moduleAliases.add(
+                rhs.name
+            );
+        }
+    }
+
+
+    function emitObjectLiteral(
+        node,
+        line,
+        parent
+    ) {
+
+        for (
+            const property
+            of node.properties || []
+        ) {
+
+            if (
+                property.type !==
+                "ObjectProperty"
+            ) {
+                continue;
+            }
+
+
+            const name =
+                property.key?.name ||
+                property.key?.value;
+
+
+            if (!name) {
+                continue;
+            }
+
+
+            const rhs =
+                property.value;
+
+
+            const type =
+                getRhsType(
+                    rhs
+                );
+
+
+            const api = {
+
+                name,
+
+                type,
+
+                kind:
+                    type,
+
+                parent:
+                    parent ||
+                    "module.exports",
+
+                file:
+                    filePath,
+
+                line:
+                    property.loc?.start?.line ||
+                    line
+            };
+
+
+            collectSignature(
+                api,
+                rhs
+            );
+
+
+            addApi(api);
+        }
+    }
+
+
+    function emitNamedExport(
+        name,
+        rhs,
+        line,
+        owner
+    ) {
+
+        if (!name) {
+            return;
+        }
+
+
+        const type =
+            getRhsType(
+                rhs
+            );
+
+
+        const api = {
+
+            name,
+
+            type,
+
+            kind:
+                type,
+
+            parent:
+                owner ||
+                "module.exports",
+
+            file:
+                filePath,
+
+            line
+        };
+
+
+        collectSignature(
+            api,
+            rhs
+        );
+
+
+        addApi(api);
+    }
+
+
+    // ------------------------------------------------
+    // Assignment handling
+    // ------------------------------------------------
+
+    function handleAssignment(
+        expr,
+        line
+    ) {
+
+        const left =
+            expr.left;
+
+        const right =
+            expr.right;
+
+
+        // --------------------------------------------
+        // Primary export:
+        //   module.exports = X
+        //   exports = module.exports = X
+        // --------------------------------------------
+
+        if (
+            isPrimaryExportTarget(
+                left
+            )
+        ) {
+
+            emitPrimaryExport(
+                unwrapAssignmentRhs(
+                    right
+                ),
+                line
+            );
+
+            return;
+        }
+
+
+        // --------------------------------------------
+        // Named export / method
+        //   module.exports.foo = X
+        //   exports.foo = X
+        //   app.get = function {}
+        // --------------------------------------------
+
+        if (
+            left.type ===
+            "MemberExpression"
+        ) {
+
+            const owner =
+                left.object;
+
+            const name =
+                getMemberName(
+                    left
+                );
+
+            if (
+                name &&
+                isModuleExportsRef(
+                    owner
+                )
+            ) {
+
+                emitNamedExport(
+                    name,
+                    right,
+                    line,
+                    getOwnerName(
+                        owner
+                    )
+                );
+            }
+        }
+    }
+
+
+    // ------------------------------------------------
+    // Traversal
+    // ------------------------------------------------
+
+    function walk(node) {
+
+        if (
+            !node ||
+            typeof node !== "object"
+        ) {
+            return;
+        }
+
+
+        if (!node.type) {
+            return;
+        }
+
+
+        // --------------------------------------------
+        // Collect declared functions (hoisted lookup)
+        // --------------------------------------------
+
+        if (
+            node.type ===
+            "FunctionDeclaration"
+        ) {
+
+            if (node.id?.name) {
+
+                declaredFunctions.add(
+                    node.id.name
+                );
+            }
+        }
+
+
+        // --------------------------------------------
+        // Alias declarations
+        //   var app = exports = module.exports = {}
+        // --------------------------------------------
+
+        if (
+            node.type ===
+            "VariableDeclaration"
+        ) {
+
+            for (
+                const declaration
+                of node.declarations || []
+            ) {
+
+                const name =
+                    declaration.id?.name;
+
+                const init =
+                    declaration.init;
+
+                if (!name || !init) {
+                    continue;
+                }
+
+
+                if (
+                    init.type ===
+                    "AssignmentExpression" &&
+                    chainAssignsExport(
+                        init
+                    )
+                ) {
+
+                    moduleAliases.add(
+                        name
+                    );
+
+                    if (
+                        isPrimaryExportTarget(
+                            init.left
+                        )
+                    ) {
+
+                        emitPrimaryExport(
+                            unwrapAssignmentRhs(
+                                init
+                            ),
+                            declaration.loc?.start?.line ||
+                            line
+                        );
+                    }
+                }
+            }
+        }
+
+
+        // --------------------------------------------
+        // Assignments
+        // --------------------------------------------
+
+        if (
+            node.type ===
+            "ExpressionStatement"
+        ) {
+
+            const expression =
+                node.expression;
+
+            if (
+                expression?.type ===
+                "AssignmentExpression"
+            ) {
+
+                handleAssignment(
+                    expression,
+                    node.loc?.start?.line
+                );
+            }
+        }
+
+
+        // --------------------------------------------
+        // Continue traversal
+        // --------------------------------------------
+
+        for (
+            const key
+            of Object.keys(node)
+        ) {
+
+            if (
+                key === "loc" ||
+                key === "start" ||
+                key === "end" ||
+                key === "range" ||
+                key === "extra"
+            ) {
+                continue;
+            }
+
+
+            const value =
+                node[key];
+
+
+            if (Array.isArray(value)) {
+
+                for (
+                    const child
+                    of value
+                ) {
+
+                    if (
+                        child &&
+                        typeof child === "object"
+                    ) {
+                        walk(child);
+                    }
+                }
+            }
+            else if (
+                value &&
+                typeof value === "object"
+            ) {
+                walk(value);
+            }
+        }
+    }
+
+
+    walk(ast);
+
+    return exports;
+}
+
+
+/**
  * Extract exports from one package source file.
  *
  * We intentionally keep this simple initially.
@@ -1614,6 +2374,31 @@ function extractPackageExports(
 
 
     visit(ast);
+
+
+    // ------------------------------------------------
+    // CommonJS exports
+    //
+    // Packages such as Express expose APIs through
+    // module.exports / exports assignment instead of
+    // ESM export statements. Merge those in so the
+    // API surface is not reported as empty.
+    // ------------------------------------------------
+
+    const commonJsExports =
+        extractCommonJsExports(
+            ast,
+            filePath
+        );
+
+
+    for (
+        const api
+        of commonJsExports
+    ) {
+        addExport(api);
+    }
+
 
     return exports;
 }
@@ -2320,7 +3105,9 @@ function collectExportPaths(
 }
 
 function readPackageDocumentation(
-    packageDirectory
+    packageDirectory,
+    packageName = null,
+    packageVersion = null
 ) {
 
     const possibleFiles = [
@@ -2385,7 +3172,16 @@ function readPackageDocumentation(
                 file:
                     fileName,
 
-                content
+                content,
+
+                package:
+                    packageName,
+
+                version:
+                    packageVersion,
+
+                type:
+                    "documentation"
             });
 
         }
@@ -2480,7 +3276,9 @@ function analyzePackageVersion(
 
         const documentation =
             readPackageDocumentation(
-                downloaded.packageDirectory
+                downloaded.packageDirectory,
+                packageName,
+                version
             );
 
 
@@ -2555,6 +3353,7 @@ function checkPackageVersion(
 export {
     getPackageSourceFiles,
     extractPackageExports,
+    extractCommonJsExports,
     extractDeclarationApis,
     analyzePackageDirectory,
     downloadPackageVersion,

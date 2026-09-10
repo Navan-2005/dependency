@@ -16,6 +16,10 @@ function getApiName(api) {
         return "";
     }
 
+    if (typeof api === "string") {
+        return api;
+    }
+
     if (api.parent && api.name) {
         return `${api.parent}.${api.name}`;
     }
@@ -66,14 +70,17 @@ function getUsageContext(
                         null,
 
                     local:
+                        impact.local ||
                         usage.local ||
                         null,
 
                     receiver:
+                        impact.receiver ||
                         usage.receiver ||
                         null,
 
                     type:
+                        impact.type ||
                         usage.type ||
                         null
                 };
@@ -246,6 +253,21 @@ function buildQuery({
 function getChangedApis(apiDiff) {
 
     const changes = [];
+
+
+    for (
+        const api
+        of apiDiff?.added || []
+    ) {
+
+        changes.push({
+
+            api,
+
+            changeType:
+                "added"
+        });
+    }
 
 
     for (

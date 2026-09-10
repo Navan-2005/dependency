@@ -1,18 +1,18 @@
 import {
     analyzeJavaScript
-} from "./controller/repo.js";
+} from "../server/controller/repo.js";
 
 import {
     analyzePackageVersion
-} from "./service/packageApiAnalyzer.js";
+} from "../server/service/packageApiAnalyzer.js";
 
 import {
     diffApiSnapshots
-} from "./service/apiDiff.js";
+} from "../server/service/apiDiff.js";
 
 import {
     generateImpactReport
-} from "./service/apiImpactMatcher.js";
+} from "../server/service/apiImpactMatcher.js";
 
 
 const repoPath =

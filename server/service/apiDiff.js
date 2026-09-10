@@ -37,6 +37,17 @@ function normalizeParameter(parameter) {
         };
     }
 
+    if (
+        typeof parameter ===
+        "string"
+    ) {
+        return {
+            name: parameter,
+            type: null,
+            optional: false
+        };
+    }
+
     return {
         name:
             parameter.name ||

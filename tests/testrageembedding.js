@@ -2,11 +2,11 @@ import "dotenv/config";
 
 import {
     chunkDocuments
-} from "./service/rag/documentChunker.js";
+} from "../server/service/rag/documentChunker.js";
 
 import {
     generateEmbeddings
-} from "./service/rag/embeddings.js";
+} from "../server/service/rag/embeddings.js";
 
 
 const documents = [

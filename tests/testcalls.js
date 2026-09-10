@@ -1,6 +1,6 @@
 import {
     analyzeFileCallSites
-} from "./service/callSiteAnalyzer.js";
+} from "../server/service/callSiteAnalyzer.js";
 
 
 const file =

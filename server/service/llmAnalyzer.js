@@ -434,22 +434,15 @@ async function analyzeUpgradeWithLLM(
         await ai.models.generateContent({
 
             model:
-                "gemini-3.7-flash",
+                "gemini-3.5-flash",
 
             contents: [
-                {
-                    role: "system",
-                    parts: [
-                        {
-                            text: SYSTEM_PROMPT
-                        }
-                    ]
-                },
                 {
                     role: "user",
                     parts: [
                         {
-                            text: userPrompt
+                            text:
+                                `${SYSTEM_PROMPT}\n\n${userPrompt}`
                         }
                     ]
                 }

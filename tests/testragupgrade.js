@@ -2,11 +2,11 @@ import "dotenv/config";
 
 import {
     buildPackageKnowledge
-} from "./service/rag/packageKnowledge.js";
+} from "../server/service/rag/packageKnowledge.js";
 
 import {
     retrieveUpgradeEvidence
-} from "./service/rag/upgradeRetriever.js";
+} from "../server/service/rag/upgradeRetriever.js";
 
 
 // --------------------------------------------------

@@ -2,12 +2,12 @@ import "dotenv/config";
 
 import {
     analyzePackageVersion
-} from "./service/packageApiAnalyzer.js";
+} from "../server/service/packageApiAnalyzer.js";
 
 import {
     buildPackageKnowledge,
     searchPackageKnowledge
-} from "./service/rag/packageKnowledge.js";
+} from "../server/service/rag/packageKnowledge.js";
 
 
 const packageName =

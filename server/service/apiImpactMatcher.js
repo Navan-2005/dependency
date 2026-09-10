@@ -515,6 +515,8 @@ function matchChange(
 
         impacts.push({
 
+            ...usage,
+
             package:
                 packageName,
 

@@ -1,10 +1,10 @@
 import {
     analyzePackageVersion
-} from "./service/packageApiAnalyzer.js";
+} from "../server/service/packageApiAnalyzer.js";
 
 import {
     diffApiSnapshots
-} from "./service/apiDiff.js";
+} from "../server/service/apiDiff.js";
 
 
 console.log(

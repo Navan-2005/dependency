@@ -1,4 +1,4 @@
-import { analyzeUpgrade } from "./service/upgradeAnalyzer.js";
+import { analyzeUpgrade } from "../server/service/upgradeAnalyzer.js";
 import "dotenv/config";
 
 const result =
